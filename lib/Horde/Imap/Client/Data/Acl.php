@@ -1,18 +1,26 @@
 <?php
 /**
- * ACL rights for a mailbox (see RFC 2086/4314).
- *
- * Copyright 2011-2012 Horde LLC (http://www.horde.org/)
+ * Copyright 2011-2017 Horde LLC (http://www.horde.org/)
  *
  * See the enclosed file COPYING for license information (LGPL). If you
  * did not receive this file, see http://www.horde.org/licenses/lgpl21.
  *
- * @author   Michael Slusarz <slusarz@horde.org>
- * @category Horde
- * @license  http://www.horde.org/licenses/lgpl21 LGPL 2.1
- * @package  Imap_Client
+ * @category  Horde
+ * @copyright 2011-2017 Horde LLC
+ * @license   http://www.horde.org/licenses/lgpl21 LGPL 2.1
+ * @package   Imap_Client
  */
-class Horde_Imap_Client_Data_Acl extends Horde_Imap_Client_Data_AclCommon implements ArrayAccess, Iterator, Serializable
+
+/**
+ * ACL rights for a mailbox (see RFC 2086/4314).
+ *
+ * @author    Michael Slusarz <slusarz@horde.org>
+ * @category  Horde
+ * @copyright 2011-2017 Horde LLC
+ * @license   http://www.horde.org/licenses/lgpl21 LGPL 2.1
+ * @package   Imap_Client
+ */
+class Horde_Imap_Client_Data_Acl extends Horde_Imap_Client_Data_AclCommon implements ArrayAccess, IteratorAggregate, Serializable
 {
     /**
      * ACL rights.
@@ -24,7 +32,7 @@ class Horde_Imap_Client_Data_Acl extends Horde_Imap_Client_Data_AclCommon implem
     /**
      * Constructor.
      *
-     * @var string $rights  The rights (see RFC 4314 [2.1]).
+     * @param string $rights  The rights (see RFC 4314 [2.1]).
      */
     public function __construct($rights = '')
     {
@@ -71,11 +79,19 @@ class Horde_Imap_Client_Data_Acl extends Horde_Imap_Client_Data_AclCommon implem
          * we are abstracting out use of ACL_CREATE/ACL_DELETE to their
          * component RFC 4314 rights. */
         foreach ($this->_virtual as $key => $val) {
+            foreach ($val as $right) {
+                if ($this[$right]) {
+                    foreach (array_keys($this->_virtual) as $virtual) {
+                        unset($this[$virtual]);
+                    }
+                    return;
+                }
+            }
+        }
+        foreach ($this->_virtual as $key => $val) {
             if ($this[$key]) {
                 unset($this[$key]);
-                if (!$this[reset($val)]) {
-                    $this->_rights = array_unique(array_merge($this->_rights, $val));
-                }
+                $this->_rights = array_unique(array_merge($this->_rights, $val));
             }
         }
     }
@@ -122,41 +138,11 @@ class Horde_Imap_Client_Data_Acl extends Horde_Imap_Client_Data_AclCommon implem
         $this->_rights = array_values(array_diff($this->_rights, array($offset)));
     }
 
-    /* Iterator methods. */
+    /* IteratorAggregate method. */
 
-    /**
-     */
-    public function current()
+    public function getIterator()
     {
-        return current($this->_rights);
-    }
-
-    /**
-     */
-    public function key()
-    {
-        return key($this->_rights);
-    }
-
-    /**
-     */
-    public function next()
-    {
-        next($this->_rights);
-    }
-
-    /**
-     */
-    public function rewind()
-    {
-        reset($this->_rights);
-    }
-
-    /**
-     */
-    public function valid()
-    {
-        return (key($this->_rights) !== null);
+        return new ArrayIterator($this->_rights);
     }
 
     /* Serializable methods. */

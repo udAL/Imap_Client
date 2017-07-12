@@ -1,30 +1,44 @@
 <?php
 /**
- * Abstraction of the IMAP4rev1 search criteria (see RFC 3501 [6.4.4]).
- * Allows translation between abstracted search criteria and a generated IMAP
- * search criteria string suitable for sending to a remote IMAP server.
- *
- * Copyright 2008-2012 Horde LLC (http://www.horde.org/)
+ * Copyright 2008-2017 Horde LLC (http://www.horde.org/)
  *
  * See the enclosed file COPYING for license information (LGPL). If you
  * did not receive this file, see http://www.horde.org/licenses/lgpl21.
  *
- * @author   Michael Slusarz <slusarz@horde.org>
- * @category Horde
- * @license  http://www.horde.org/licenses/lgpl21 LGPL 2.1
- * @package  Imap_Client
+ * @category  Horde
+ * @copyright 2008-2017 Horde LLC
+ * @license   http://www.horde.org/licenses/lgpl21 LGPL 2.1
+ * @package   Imap_Client
+ */
+
+/**
+ * Abstraction of the IMAP4rev1 search criteria (see RFC 3501 [6.4.4]).
+ * Allows translation between abstracted search criteria and a generated IMAP
+ * search criteria string suitable for sending to a remote IMAP server.
+ *
+ * @author    Michael Slusarz <slusarz@horde.org>
+ * @category  Horde
+ * @copyright 2008-2017 Horde LLC
+ * @license   http://www.horde.org/licenses/lgpl21 LGPL 2.1
+ * @package   Imap_Client
  */
 class Horde_Imap_Client_Search_Query implements Serializable
 {
-    /* Serialized version. */
+    /**
+     * Serialized version.
+     */
     const VERSION = 3;
 
-    /* Constants for dateSearch() */
+    /**
+     * Constants for dateSearch()
+     */
     const DATE_BEFORE = 'BEFORE';
     const DATE_ON = 'ON';
     const DATE_SINCE = 'SINCE';
 
-    /* Constants for intervalSearch() */
+    /**
+     * Constants for intervalSearch()
+     */
     const INTERVAL_OLDER = 'OLDER';
     const INTERVAL_YOUNGER = 'YOUNGER';
 
@@ -44,45 +58,51 @@ class Horde_Imap_Client_Search_Query implements Serializable
     protected $_search = array();
 
     /**
-     * Temp array used when building search string.
-     *
-     * @var array
-     */
-    protected $_temp = array();
-
-    /**
      * String representation: The IMAP search string.
      */
     public function __toString()
     {
-        $utils = new Horde_Imap_Client_Utils();
-        $res = $this->build(null);
-        return trim($utils->parseCommandArray($res['query']));
+        try {
+            $res = $this->build(null);
+            return $res['query']->escape();
+        } catch (Exception $e) {
+            return '';
+        }
     }
 
     /**
      * Sets the charset of the search text.
      *
-     * @param string $charset     The charset to use for the search.
-     * @param callback $callback  A callback function to run on all text
-     *                            values when the charset changes.  It must
-     *                            accept three parameters: the text, the old
-     *                            charset (will be null if no charset was
-     *                            previously given), and the new charset. It
-     *                            should return the converted text value.
+     * @param string $charset   The charset to use for the search.
+     * @param boolean $convert  Convert existing text values?
+     *
+     * @throws Horde_Imap_Client_Exception_SearchCharset
      */
-    public function charset($charset, $callback = null)
+    public function charset($charset, $convert = true)
     {
         $oldcharset = $this->_charset;
-        $this->_charset = strtoupper($charset);
-        if (is_null($callback) || ($oldcharset == $this->_charset)) {
+        $this->_charset = Horde_String::upper($charset);
+
+        if (!$convert || ($oldcharset == $this->_charset)) {
             return;
+        }
+
+        foreach (array('and', 'or') as $item) {
+            if (isset($this->_search[$item])) {
+                foreach ($this->_search[$item] as &$val) {
+                    $val->charset($charset, $convert);
+                }
+            }
         }
 
         foreach (array('header', 'text') as $item) {
             if (isset($this->_search[$item])) {
-                foreach (array_keys($this->_search[$item]) as $key) {
-                    $this->_search[$item][$key]['text'] = call_user_func_array($callback, array($this->_search[$item][$key]['text'], $oldcharset, $this->_charset));
+                foreach ($this->_search[$item] as $key => $val) {
+                    $new_val = Horde_String::convertCharset($val['text'], $oldcharset, $this->_charset);
+                    if (Horde_String::convertCharset($new_val, $this->_charset, $oldcharset) != $val['text']) {
+                        throw new Horde_Imap_Client_Exception_SearchCharset($this->_charset);
+                    }
+                    $this->_search[$item][$key]['text'] = $new_val;
                 }
             }
         }
@@ -91,77 +111,136 @@ class Horde_Imap_Client_Search_Query implements Serializable
     /**
      * Builds an IMAP4rev1 compliant search string.
      *
-     * @param array $exts  The list of extensions supported by the server.
-     *                     This determines whether certain criteria can be
-     *                     used, and determines whether workarounds are used
-     *                     for other criteria. In the format returned by
-     *                     Horde_Imap_Client_Base::capability(). If this value
-     *                     is null, all extensions are assumed to be
-     *                     available.
+     * @todo  Change default of $exts to null.
+     *
+     * @param Horde_Imap_Client_Base $exts  The server object this query will
+     *                                      be run on (@since 2.24.0), a
+     *                                      Horde_Imap_Client_Data_Capability
+     *                                      object (@since 2.24.0), or the
+     *                                      list of extensions present
+     *                                      on the server (@deprecated).
+     *                                      If null, all extensions are
+     *                                      assumed to be available.
      *
      * @return array  An array with these elements:
      *   - charset: (string) The charset of the search string. If null, no
      *              text strings appear in query.
      *   - exts: (array) The list of IMAP extensions used to create the
      *           string.
-     *   - imap4: (boolean) True if the search uses IMAP4 criteria (as opposed
-     *            to IMAP2 search criteria).
-     *   - query: (array) The IMAP search string.
+     *   - query: (Horde_Imap_Client_Data_Format_List) The IMAP search
+     *            command.
      *
+     * @throws Horde_Imap_Client_Data_Format_Exception
      * @throws Horde_Imap_Client_Exception_NoSupportExtension
      */
     public function build($exts = array())
     {
-        $this->_temp = array(
-            'cmds' => array(),
+        /* @todo: BC */
+        if (is_array($exts)) {
+            $tmp = new Horde_Imap_Client_Data_Capability_Imap();
+            foreach ($exts as $key => $val) {
+                $tmp->add($key, is_array($val) ? $val : null);
+            }
+            $exts = $tmp;
+        } elseif (!is_null($exts)) {
+            if ($exts instanceof Horde_Imap_Client_Base) {
+                $exts = $exts->capability;
+            } elseif (!($exts instanceof Horde_Imap_Client_Data_Capability)) {
+                throw new InvalidArgumentException('Incorrect $exts parameter');
+            }
+        }
+
+        $temp = array(
+            'cmds' => new Horde_Imap_Client_Data_Format_List(),
             'exts' => $exts,
-            'exts_used' => array(),
-            'imap4' => false
+            'exts_used' => array()
         );
-        $cmds = &$this->_temp['cmds'];
-        $charset = null;
-        $exts_used = &$this->_temp['exts_used'];
-        $imap4 = &$this->_temp['imap4'];
+        $cmds = &$temp['cmds'];
+        $charset = $charset_cname = null;
+        $default_search = true;
+        $exts_used = &$temp['exts_used'];
         $ptr = &$this->_search;
 
+        $charset_get = function ($c) use (&$charset, &$charset_cname) {
+            $charset = is_null($c)
+                ? 'US-ASCII'
+                : strval($c);
+            $charset_cname = ($charset === 'US-ASCII')
+                ? 'Horde_Imap_Client_Data_Format_Astring'
+                : 'Horde_Imap_Client_Data_Format_Astring_Nonascii';
+        };
+        $create_return = function ($charset, $exts_used, $cmds) {
+            return array(
+                'charset' => $charset,
+                'exts' => array_keys(array_flip($exts_used)),
+                'query' => $cmds
+            );
+        };
+
+        /* Do IDs check first. If there is an empty ID query (without a NOT
+         * qualifier), the rest of this query is irrelevant since we already
+         * know the search will return no results. */
+        if (isset($ptr['ids'])) {
+            if (!count($ptr['ids']['ids']) && !$ptr['ids']['ids']->special) {
+                if (empty($ptr['ids']['not'])) {
+                    /* This is a match on an empty list of IDs. We do need to
+                     * process any OR queries that may exist, since they are
+                     * independent of this result. */
+                    if (isset($ptr['or'])) {
+                        $this->_buildAndOr(
+                            'OR', $ptr['or'], $charset, $exts_used, $cmds
+                        );
+                    }
+                    return $create_return($charset, $exts_used, $cmds);
+                }
+
+                /* If reached here, this a NOT search of an empty list. We can
+                 * safely discard this from the output. */
+            } else {
+                $this->_addFuzzy(!empty($ptr['ids']['fuzzy']), $temp);
+                if (!empty($ptr['ids']['not'])) {
+                    $cmds->add('NOT');
+                }
+                if (!$ptr['ids']['ids']->sequence) {
+                    $cmds->add('UID');
+                }
+                $cmds->add(strval($ptr['ids']['ids']));
+            }
+        }
+
         if (isset($ptr['new'])) {
-            $this->_addFuzzy(!empty($ptr['newfuzzy']));
+            $this->_addFuzzy(!empty($ptr['newfuzzy']), $temp);
             if ($ptr['new']) {
-                $cmds[] = 'NEW';
+                $cmds->add('NEW');
                 unset($ptr['flag']['UNSEEN']);
             } else {
-                $cmds[] = 'OLD';
+                $cmds->add('OLD');
             }
             unset($ptr['flag']['RECENT']);
         }
 
         if (!empty($ptr['flag'])) {
             foreach ($ptr['flag'] as $key => $val) {
-                if ($key == 'draft') {
-                    // DRAFT flag was not in IMAP2
-                    $imap4 = true;
-                }
-
-                $this->_addFuzzy(!empty($val['fuzzy']));
+                $this->_addFuzzy(!empty($val['fuzzy']), $temp);
 
                 $tmp = '';
                 if (empty($val['set'])) {
                     // This is a 'NOT' search.  All system flags but \Recent
                     // have 'UN' equivalents.
                     if ($key == 'RECENT') {
-                        $cmds[] = 'NOT';
-                        // NOT searches were not in IMAP2
-                        $imap4 = true;
+                        $cmds->add('NOT');
                     } else {
                         $tmp = 'UN';
                     }
                 }
 
                 if ($val['type'] == 'keyword') {
-                    $cmds[] = $tmp . 'KEYWORD';
-                    $cmds[] = array('t' => Horde_Imap_Client::DATA_ATOM, 'v' => $key);
+                    $cmds->add(array(
+                        $tmp . 'KEYWORD',
+                        $key
+                    ));
                 } else {
-                    $cmds[] = $tmp . $key;
+                    $cmds->add($tmp . $key);
                 }
             }
         }
@@ -174,223 +253,253 @@ class Horde_Imap_Client_Search_Query implements Serializable
             );
 
             foreach ($ptr['header'] as $val) {
-                $this->_addFuzzy(!empty($val['fuzzy']));
+                $this->_addFuzzy(!empty($val['fuzzy']), $temp);
 
                 if (!empty($val['not'])) {
-                    $cmds[] = 'NOT';
-                    // NOT searches were not in IMAP2
-                    $imap4 = true;
+                    $cmds->add('NOT');
                 }
 
                 if (in_array($val['header'], $systemheaders)) {
-                    $cmds[] = $val['header'];
+                    $cmds->add($val['header']);
                 } else {
-                    // HEADER searches were not in IMAP2
-                    $cmds[] = 'HEADER';
-                    $cmds[] = array('t' => Horde_Imap_Client::DATA_ASTRING, 'v' => $val['header']);
-                    $imap4 = true;
+                    $cmds->add(array(
+                        'HEADER',
+                        new Horde_Imap_Client_Data_Format_Astring($val['header'])
+                    ));
                 }
-                $cmds[] = array('t' => Horde_Imap_Client::DATA_ASTRING, 'v' => $val['text']);
-                $charset = is_null($this->_charset)
-                    ? 'US-ASCII'
-                    : $this->_charset;
+
+                $charset_get($this->_charset);
+                $cmds->add(
+                    new $charset_cname(isset($val['text']) ? $val['text'] : '')
+                );
             }
         }
 
         if (!empty($ptr['text'])) {
             foreach ($ptr['text'] as $val) {
-                $this->_addFuzzy(!empty($val['fuzzy']));
+                $this->_addFuzzy(!empty($val['fuzzy']), $temp);
 
                 if (!empty($val['not'])) {
-                    $cmds[] = 'NOT';
-                    // NOT searches were not in IMAP2
-                    $imap4 = true;
+                    $cmds->add('NOT');
                 }
-                $cmds[] = $val['type'];
-                $cmds[] = array('t' => Horde_Imap_Client::DATA_ASTRING, 'v' => $val['text']);
-                if (is_null($charset)) {
-                    $charset = is_null($this->_charset)
-                        ? 'US-ASCII'
-                        : $this->_charset;
-                }
+
+                $charset_get($this->_charset);
+                $cmds->add(array(
+                    $val['type'],
+                    new $charset_cname($val['text'])
+                ));
             }
         }
 
         if (!empty($ptr['size'])) {
             foreach ($ptr['size'] as $key => $val) {
-                $this->_addFuzzy(!empty($val['fuzzy']));
+                $this->_addFuzzy(!empty($val['fuzzy']), $temp);
                 if (!empty($val['not'])) {
-                    $cmds[] = 'NOT';
+                    $cmds->add('NOT');
                 }
-                $cmds[] = $key;
-                $cmds[] = array('t' => Horde_Imap_Client::DATA_NUMBER, 'v' => $val['size']);
-                // LARGER/SMALLER searches were not in IMAP2
-                $imap4 = true;
+                $cmds->add(array(
+                    $key,
+                    new Horde_Imap_Client_Data_Format_Number(
+                        empty($val['size']) ? 0 : $val['size']
+                    )
+                ));
             }
-        }
-
-        if (isset($ptr['ids']) &&
-            (count($ptr['ids']['ids']) || $ptr['ids']['ids']->all)) {
-            $this->_addFuzzy(!empty($val['fuzzy']));
-            if (!empty($ptr['ids']['not'])) {
-                $cmds[] = 'NOT';
-            }
-            if (!$ptr['ids']['ids']->sequence) {
-                $cmds[] = 'UID';
-            }
-            $cmds[] = $ptr['ids']['ids']->all
-                ? '1:*'
-                : strval($ptr['ids']['ids']);
-
-            // ID searches were not in IMAP2
-            $imap4 = true;
         }
 
         if (!empty($ptr['date'])) {
             foreach ($ptr['date'] as $val) {
-                $this->_addFuzzy(!empty($val['fuzzy']));
+                $this->_addFuzzy(!empty($val['fuzzy']), $temp);
 
                 if (!empty($val['not'])) {
-                    $cmds[] = 'NOT';
-                    // NOT searches were not in IMAP2
-                    $imap4 = true;
+                    $cmds->add('NOT');
                 }
 
                 if (empty($val['header'])) {
-                    $cmds[] = $val['range'];
+                    $cmds->add($val['range']);
                 } else {
-                    $cmds[] = 'SENT' . $val['range'];
-                    // 'SENT*' searches were not in IMAP2
-                    $imap4 = true;
+                    $cmds->add('SENT' . $val['range']);
                 }
-                $cmds[] = $val['date'];
+                $cmds->add($val['date']);
             }
         }
 
         if (!empty($ptr['within'])) {
-            if (is_null($exts) || isset($exts['WITHIN'])) {
+            if (is_null($exts) || $exts->query('WITHIN')) {
                 $exts_used[] = 'WITHIN';
-                $imap4 = true;
             }
 
             foreach ($ptr['within'] as $key => $val) {
-                $this->_addFuzzy(!empty($val['fuzzy']));
+                $this->_addFuzzy(!empty($val['fuzzy']), $temp);
                 if (!empty($val['not'])) {
-                    $cmds[] = 'NOT';
-                    // NOT searches were not in IMAP2
-                    $imap4 = true;
+                    $cmds->add('NOT');
                 }
 
-                if (is_null($exts) || isset($exts['WITHIN'])) {
-                    $cmds[] = $key;
-                    $cmds[] = array('t' => Horde_Imap_Client::DATA_NUMBER, 'v' => $val['interval']);
+                if (is_null($exts) || $exts->query('WITHIN')) {
+                    $cmds->add(array(
+                        $key,
+                        new Horde_Imap_Client_Data_Format_Number($val['interval'])
+                    ));
                 } else {
                     // This workaround is only accurate to within 1 day, due
                     // to limitations with the IMAP4rev1 search commands.
-                    $date = new DateTime('now -' . $val['interval'] . ' seconds');
-                    $cmds[] = ($key == self::INTERVAL_OLDER)
-                        ? self::DATE_BEFORE
-                        : self::DATE_SINCE;
-                    $cmds[] = $date->format('d-M-Y');
+                    $cmds->add(array(
+                        ($key == self::INTERVAL_OLDER) ? self::DATE_BEFORE : self::DATE_SINCE,
+                        new Horde_Imap_Client_Data_Format_Date('now -' . $val['interval'] . ' seconds')
+                    ));
                 }
             }
         }
 
         if (!empty($ptr['modseq'])) {
-            if (!is_null($exts) && !isset($exts['CONDSTORE'])) {
-                throw new Horde_Imap_Client_Exception_NoSupportExtension('IMAP Server does not support CONDSTORE.');
+            if (!is_null($exts) && !$exts->query('CONDSTORE')) {
+                throw new Horde_Imap_Client_Exception_NoSupportExtension('CONDSTORE');
             }
 
             $exts_used[] = 'CONDSTORE';
-            $imap4 = true;
 
-            $this->_addFuzzy(!empty($ptr['modseq']['fuzzy']));
+            $this->_addFuzzy(!empty($ptr['modseq']['fuzzy']), $temp);
 
             if (!empty($ptr['modseq']['not'])) {
-                $cmds[] = 'NOT';
+                $cmds->add('NOT');
             }
-            $cmds[] = 'MODSEQ';
-            if (!is_null($ptr['modseq']['name'])) {
-                $cmds[] = array('t' => Horde_Imap_Client::DATA_STRING, 'v' => $ptr['modseq']['name']);
-                $cmds[] = $ptr['modseq']['type'];
+            $cmds->add('MODSEQ');
+            if (isset($ptr['modseq']['name'])) {
+                $cmds->add(array(
+                    new Horde_Imap_Client_Data_Format_String($ptr['modseq']['name']),
+                    $ptr['modseq']['type']
+                ));
             }
-            $cmds[] = array('t' => Horde_Imap_Client::DATA_NUMBER, 'v' => $ptr['modseq']['value']);
+            $cmds->add(new Horde_Imap_Client_Data_Format_Number($ptr['modseq']['value']));
         }
 
         if (isset($ptr['prevsearch'])) {
-            if (!is_null($exts) && !isset($exts['SEARCHRES'])) {
-                throw new Horde_Imap_Client_Exception_NoSupportExtension('IMAP Server does not support SEARCHRES.');
+            if (!is_null($exts) && !$exts->query('SEARCHRES')) {
+                throw new Horde_Imap_Client_Exception_NoSupportExtension('SEARCHRES');
             }
 
             $exts_used[] = 'SEARCHRES';
-            $imap4 = true;
 
-            $this->_addFuzzy(!empty($ptr['prevsearchfuzzy']));
+            $this->_addFuzzy(!empty($ptr['prevsearchfuzzy']), $temp);
 
             if (!$ptr['prevsearch']) {
-                $cmds[] = 'NOT';
+                $cmds->add('NOT');
             }
-            $cmds[] = '$';
+            $cmds->add('$');
         }
 
         // Add AND'ed queries
         if (!empty($ptr['and'])) {
-            foreach ($ptr['and'] as $val) {
-                $ret = $val->build();
-                $cmds = array_merge($cmds, $ret['query']);
-            }
+            $default_search = $this->_buildAndOr(
+                'AND', $ptr['and'], $charset, $exts_used, $cmds
+            );
         }
 
         // Add OR'ed queries
         if (!empty($ptr['or'])) {
-            foreach ($ptr['or'] as $val) {
-                // OR queries were not in IMAP 2
-                $imap4 = true;
-
-                $ret = $val->build();
-
-                // First OR'd query
-                if (empty($cmds)) {
-                    $cmds = array($ret['query']);
-                } else {
-                    $cmds = array_merge(array(
-                        'OR',
-                        $ret['query']
-                    ), $cmds);
-                }
-            }
+            $default_search = $this->_buildAndOr(
+                'OR', $ptr['or'], $charset, $exts_used, $cmds
+            );
         }
 
         // Default search is 'ALL'
-        if (empty($cmds)) {
-            $cmds[] = 'ALL';
+        if ($default_search && !count($cmds)) {
+            $cmds->add('ALL');
         }
 
-        return array(
-            'charset' => $charset,
-            'exts' => array_keys(array_flip($exts_used)),
-            'imap4' => $imap4,
-            'query' => $cmds
-        );
+        return $create_return($charset, $exts_used, $cmds);
+    }
+
+    /**
+     * Builds the AND/OR query.
+     *
+     * @param string $type                               'AND' or 'OR'.
+     * @param array $data                                Query data.
+     * @param string &$charset                           Search charset.
+     * @param array &$exts_used                          IMAP extensions used.
+     * @param Horde_Imap_Client_Data_Format_List &$cmds  Command list.
+     *
+     * @return boolean  True if query might return results.
+     */
+    protected function _buildAndOr($type, $data, &$charset, &$exts_used,
+                                   &$cmds)
+    {
+        $results = false;
+
+        foreach ($data as $val) {
+            $ret = $val->build();
+
+            /* Empty sub-query. */
+            if (!count($ret['query'])) {
+                switch ($type) {
+                case 'AND':
+                    /* Any empty sub-query means that the query MUST return
+                     * no results. */
+                    $cmds = new Horde_Imap_Client_Data_Format_List();
+                    $exts_used = array();
+                    return false;
+
+                case 'OR':
+                    /* Skip this query. */
+                    continue 2;
+                }
+            }
+
+            $results = true;
+
+            if (!is_null($ret['charset']) && ($ret['charset'] != 'US-ASCII')) {
+                if (!is_null($charset) &&
+                    ($charset != 'US-ASCII') &&
+                    ($charset != $ret['charset'])) {
+                    throw new InvalidArgumentException(
+                        'AND/OR queries must all have the same charset.'
+                    );
+                }
+                $charset = $ret['charset'];
+            }
+
+            $exts_used = array_merge($exts_used, $ret['exts']);
+
+            switch ($type) {
+            case 'AND':
+                $cmds->add($ret['query'], true);
+                break;
+
+            case 'OR':
+                // First OR'd query
+                if (count($cmds)) {
+                    $new_cmds = new Horde_Imap_Client_Data_Format_List();
+                    $new_cmds->add(array(
+                        'OR',
+                        $ret['query'],
+                        $cmds
+                    ));
+                    $cmds = $new_cmds;
+                } else {
+                    $cmds = $ret['query'];
+                }
+                break;
+            }
+        }
+
+        return $results;
     }
 
     /**
      * Adds fuzzy modifier to search keys.
      *
      * @param boolean $add  Add the fuzzy modifier?
+     * @param array $temp   Temporary build data.
      *
      * @throws Horde_Imap_Client_Exception_NoSupport_Extension
      */
-    protected function _addFuzzy($add)
+    protected function _addFuzzy($add, &$temp)
     {
         if ($add) {
-            if (!isset($this->_temp['exts']['SEARCH']) ||
-                !in_array('FUZZY', $this->_temp['exts']['SEARCH'])) {
-                throw new Horde_Imap_Client_Exception_NoSupportExtension('IMAP Server does not support SEARCH=FUZZY.');
+            if (!$temp['exts']->query('SEARCH', 'FUZZY')) {
+                throw new Horde_Imap_Client_Exception_NoSupportExtension('SEARCH=FUZZY');
             }
-            $this->_temp['cmds'][] = 'FUZZY';
-            $this->_temp['exts_used'][] = 'SEARCH=FUZZY';
-            $this->_temp['imap4'] = true;
+            $temp['cmds']->add('FUZZY');
+            $temp['exts_used'][] = 'SEARCH=FUZZY';
         }
     }
 
@@ -407,7 +516,7 @@ class Horde_Imap_Client_Search_Query implements Serializable
      */
     public function flag($name, $set = true, array $opts = array())
     {
-        $name = strtoupper(ltrim($name, '\\'));
+        $name = Horde_String::upper(ltrim($name, '\\'));
         if (!isset($this->_search['flag'])) {
             $this->_search['flag'] = array();
         }
@@ -473,7 +582,7 @@ class Horde_Imap_Client_Search_Query implements Serializable
         }
         $this->_search['header'][] = array_filter(array(
             'fuzzy' => !empty($opts['fuzzy']),
-            'header' => strtoupper($header),
+            'header' => Horde_String::upper($header),
             'text' => $text,
             'not' => $not
         ));
@@ -508,6 +617,8 @@ class Horde_Imap_Client_Search_Query implements Serializable
     /**
      * Search for messages smaller/larger than a certain size.
      *
+     * @todo: Remove $not for 3.0
+     *
      * @param integer $size    The size (in bytes).
      * @param boolean $larger  Search for messages larger than $size?
      * @param boolean $not     If true, do a 'NOT' search of $text.
@@ -529,12 +640,12 @@ class Horde_Imap_Client_Search_Query implements Serializable
     }
 
     /**
-     * Search for messages within a given ID sequence range. Only one message
-     * range can be specified per query.
+     * Search for messages within a given UID range. Only one message range
+     * can be specified per query.
      *
-     * @param Horde_Imap_Client_Ids $ids  The list of IDs to search.
+     * @param Horde_Imap_Client_Ids $ids  The list of UIDs to search.
      * @param boolean $not                If true, do a 'NOT' search of the
-     *                                    IDs.
+     *                                    UIDs.
      * @param array $opts                 Additional options:
      *   - fuzzy: (boolean) If true, perform a fuzzy search. The IMAP server
      *            MUST support RFC 6203.
@@ -571,8 +682,13 @@ class Horde_Imap_Client_Search_Query implements Serializable
         if (!isset($this->_search['date'])) {
             $this->_search['date'] = array();
         }
+
+        // We should really be storing the raw DateTime object as data,
+        // but all versions of the query object have converted at this stage.
+        $ob = new Horde_Imap_Client_Data_Format_Date($date);
+
         $this->_search['date'][] = array_filter(array(
-            'date' => $date->format('d-M-Y'),
+            'date' => $ob->escape(),
             'fuzzy' => !empty($opts['fuzzy']),
             'header' => $header,
             'range' => $range,
@@ -611,42 +727,50 @@ class Horde_Imap_Client_Search_Query implements Serializable
 
     /**
      * AND queries - the contents of this query will be AND'ed (in its
-     * entirety) with the contents of each of the queries passed in.  All
+     * entirety) with the contents of EACH of the queries passed in.  All
      * AND'd queries must share the same charset as this query.
      *
-     * @param array $queries  An array of queries to AND with this one.  Each
-     *                        query is a Horde_Imap_Client_Search_Query
-     *                        object.
+     * @param mixed $queries  A query, or an array of queries, to AND with the
+     *                        current query.
      */
     public function andSearch($queries)
     {
         if (!isset($this->_search['and'])) {
             $this->_search['and'] = array();
         }
+
+        if ($queries instanceof Horde_Imap_Client_Search_Query) {
+            $queries = array($queries);
+        }
+
         $this->_search['and'] = array_merge($this->_search['and'], $queries);
     }
 
     /**
      * OR a query - the contents of this query will be OR'ed (in its entirety)
-     * with the contents of each of the queries passed in.  All OR'd queries
+     * with the contents of EACH of the queries passed in.  All OR'd queries
      * must share the same charset as this query.  All contents of any single
      * query will be AND'ed together.
      *
-     * @param array $queries  An array of queries to OR with this one.  Each
-     *                        query is a Horde_Imap_Client_Search_Query
-     *                        object.
+     * @param mixed $queries  A query, or an array of queries, to OR with the
+     *                        current query.
      */
     public function orSearch($queries)
     {
         if (!isset($this->_search['or'])) {
             $this->_search['or'] = array();
         }
+
+        if ($queries instanceof Horde_Imap_Client_Search_Query) {
+            $queries = array($queries);
+        }
+
         $this->_search['or'] = array_merge($this->_search['or'], $queries);
     }
 
     /**
      * Search for messages modified since a specific moment. The IMAP server
-     * must support the CONDSTORE extension (RFC 4551) for this query to be
+     * must support the CONDSTORE extension (RFC 7162) for this query to be
      * used.
      *
      * @param integer $value  The mod-sequence value.
@@ -662,7 +786,7 @@ class Horde_Imap_Client_Search_Query implements Serializable
                            array $opts = array())
     {
         if (!is_null($type)) {
-            $type = strtolower($type);
+            $type = Horde_String::lower($type);
             if (!in_array($type, array('shared', 'priv', 'all'))) {
                 $type = 'all';
             }

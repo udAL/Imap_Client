@@ -1,16 +1,24 @@
 <?php
 /**
- * Fetch query object for use with Horde_Imap_Client_Base#query().
- *
- * Copyright 2011-2012 Horde LLC (http://www.horde.org/)
+ * Copyright 2011-2017 Horde LLC (http://www.horde.org/)
  *
  * See the enclosed file COPYING for license information (LGPL). If you
  * did not receive this file, see http://www.horde.org/licenses/lgpl21.
  *
- * @author   Michael Slusarz <slusarz@horde.org>
- * @category Horde
- * @license  http://www.horde.org/licenses/lgpl21 LGPL 2.1
- * @package  Imap_Client
+ * @category  Horde
+ * @copyright 2011-2017 Horde LLC
+ * @license   http://www.horde.org/licenses/lgpl21 LGPL 2.1
+ * @package   Imap_Client
+ */
+
+/**
+ * Fetch query object for use with Horde_Imap_Client_Base#fetch().
+ *
+ * @author    Michael Slusarz <slusarz@horde.org>
+ * @category  Horde
+ * @copyright 2011-2017 Horde LLC
+ * @license   http://www.horde.org/licenses/lgpl21 LGPL 2.1
+ * @package   Imap_Client
  */
 class Horde_Imap_Client_Fetch_Query implements ArrayAccess, Countable, Iterator
 {
@@ -96,8 +104,8 @@ class Horde_Imap_Client_Fetch_Query implements ArrayAccess, Countable, Iterator
     /**
      * Return MIME header text.
      *
-     *  MIME header text is defined only for non-RFC 2822 messages and
-     *  non-message/rfc822 parts.
+     * MIME header text is defined only for non-RFC 2822 messages and
+     * non-message/rfc822 parts.
      *
      * @param string $id   The MIME ID to obtain the MIME header text for.
      * @param array $opts  The following options are available:
@@ -176,9 +184,12 @@ class Horde_Imap_Client_Fetch_Query implements ArrayAccess, Countable, Iterator
      */
     public function headers($label, $search, array $opts = array())
     {
-        $this->_data[Horde_Imap_Client::FETCH_HEADERS][$label] = array_merge($opts, array(
-            'headers' => $search
-        ));
+        $this->_data[Horde_Imap_Client::FETCH_HEADERS][$label] = array_merge(
+            $opts,
+            array(
+                'headers' => array_map('strval', $search)
+            )
+        );
     }
 
     /**
@@ -278,9 +289,9 @@ class Horde_Imap_Client_Fetch_Query implements ArrayAccess, Countable, Iterator
     }
 
     /**
-     * Returns a MD5 hash of the current query object.
+     * Returns a hash of the current query object.
      *
-     * @return string  MD5 hash.
+     * @return string  Hash.
      */
     public function hash()
     {
